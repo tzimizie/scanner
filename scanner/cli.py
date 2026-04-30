@@ -3,15 +3,25 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
-from .config import clear_finnhub_key, get_finnhub_key, set_finnhub_key
+from .config import (
+    AccountSettings,
+    clear_finnhub_key,
+    get_account_settings,
+    get_finnhub_key,
+    set_account_settings,
+    set_finnhub_key,
+)
 from .data import fetch_history, fetch_one
+from .journal import Journal, compute_stats, resolve_pending
 from .paths import default_watchlist_file, resolve_watchlist, watchlists_dir
 from .positions import Position, PositionStore
 from .screeners import SCREENS, list_screens
+from .sizing import format_sizing, size_trade
 from .strategy import (
     STOP_PCT,
     RISK_REWARD,
@@ -25,15 +35,27 @@ from .watch import WatchOptions, watch
 
 
 # Available strategy keys for the `--strategy` flag.
-STRATEGIES = ("warrior", "breakout")
-DEFAULT_STRATEGY = "warrior"
+STRATEGIES = ("breakout", "warrior")
+DEFAULT_STRATEGY = "breakout"
 
 
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def _print_breakout_signals(signals: List[BreakoutSignal], top: int) -> None:
+def _maybe_sizing_line(entry: float, stop: float, settings: AccountSettings) -> str:
+    if not settings.configured:
+        return ""
+    try:
+        sized = size_trade(entry=entry, stop=stop, settings=settings)
+    except ValueError:
+        return ""
+    return "  " + format_sizing(sized, entry=entry, stop=stop)
+
+
+def _print_breakout_signals(
+    signals: List[BreakoutSignal], top: int, settings: AccountSettings
+) -> None:
     if not signals:
         print("No breakout candidates today.")
         return
@@ -43,7 +65,7 @@ def _print_breakout_signals(signals: List[BreakoutSignal], top: int) -> None:
     print(header)
     print("-" * len(header))
     for s in signals:
-        print(
+        line = (
             f"{s.ticker:<8}"
             f"{s.entry:>10.2f}"
             f"{s.stop:>10.2f}"
@@ -52,12 +74,23 @@ def _print_breakout_signals(signals: List[BreakoutSignal], top: int) -> None:
             f"{s.volume_multiple:>8.2f}"
             f"{s.distance_to_high_pct * 100:>9.1f}%"
         )
+        line += _maybe_sizing_line(s.entry, s.stop, settings)
+        print(line)
     print()
-    print(f"{len(signals)} candidate(s). Stop = {STOP_PCT * 100:.1f}% (or below consolidation low).")
-    print(f"Target = entry + {RISK_REWARD:.0f} x initial risk. Place orders the next session.")
+    print(
+        f"{len(signals)} candidate(s). Stop = {STOP_PCT * 100:.1f}% "
+        f"(or below consolidation low). Target = entry + {RISK_REWARD:.0f}x risk."
+    )
+    if not settings.configured:
+        print(
+            "Run `stockscanner config --account-size <USD> --risk-per-trade 1` "
+            "to enable position sizing."
+        )
 
 
-def _print_warrior_signals(signals: List[WarriorSignal], top: int) -> None:
+def _print_warrior_signals(
+    signals: List[WarriorSignal], top: int, settings: AccountSettings
+) -> None:
     if not signals:
         print("No Warrior-style gappers right now.")
         return
@@ -70,7 +103,7 @@ def _print_warrior_signals(signals: List[WarriorSignal], top: int) -> None:
     print(header)
     print("-" * len(header))
     for s in signals:
-        print(
+        line = (
             f"{s.ticker:<8}"
             f"{s.last_price:>9.2f}"
             f"{s.gap_pct * 100:>7.1f}%"
@@ -80,9 +113,11 @@ def _print_warrior_signals(signals: List[WarriorSignal], top: int) -> None:
             f"{s.suggested_stop:>9.2f}"
             f"{s.suggested_target:>9.2f}"
         )
+        line += _maybe_sizing_line(s.suggested_entry, s.suggested_stop, settings)
+        print(line)
     print()
     print(f"{len(signals)} gapper(s). Entry = today's high; stop = today's low; 2:1 R/R target.")
-    print("Day-trading style — risk capital only. Past performance != future results.")
+    print("Day-trading style — risk capital only.")
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +154,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     bars = fetch_history(tickers)
     print(f"Fetched data for {len(bars)} ticker(s).")
 
+    journal = Journal.load()
+    today_iso = datetime.utcnow().date().isoformat()
+    settings = get_account_settings()
+
     if strategy == "breakout":
         breakout_signals: List[BreakoutSignal] = []
         for ticker, df in bars.items():
@@ -129,8 +168,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 continue
             if sig is not None:
                 breakout_signals.append(sig)
+                journal.upsert_alert(
+                    ticker=sig.ticker,
+                    alert_date=today_iso,
+                    entry=sig.entry,
+                    stop=sig.stop,
+                    target=sig.target,
+                    strategy="breakout",
+                    score=sig.score,
+                )
         print()
-        _print_breakout_signals(breakout_signals, top=args.top)
+        _print_breakout_signals(breakout_signals, top=args.top, settings=settings)
     else:
         warrior_signals: List[WarriorSignal] = []
         for ticker, df in bars.items():
@@ -141,9 +189,19 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 continue
             if sig is not None:
                 warrior_signals.append(sig)
+                journal.upsert_alert(
+                    ticker=sig.ticker,
+                    alert_date=today_iso,
+                    entry=sig.suggested_entry,
+                    stop=sig.suggested_stop,
+                    target=sig.suggested_target,
+                    strategy="warrior",
+                    score=sig.score,
+                )
         print()
-        _print_warrior_signals(warrior_signals, top=args.top)
+        _print_warrior_signals(warrior_signals, top=args.top, settings=settings)
 
+    journal.save()
     return 0
 
 
@@ -165,16 +223,67 @@ def cmd_enter(args: argparse.Namespace) -> int:
             return 2
         target = round(entry + RISK_REWARD * risk, 2)
 
+    settings = get_account_settings()
+    if args.shares is not None:
+        shares = int(args.shares)
+    else:
+        if not settings.configured:
+            print(
+                "Pass --shares N, or configure your account first:\n"
+                "  stockscanner config --account-size <USD> --risk-per-trade 1",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            sized = size_trade(entry=entry, stop=stop, settings=settings)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        if sized.shares <= 0:
+            print(
+                "Computed share count is 0 — risk per share too large for your "
+                "risk budget. Adjust the stop or per-trade risk %.",
+                file=sys.stderr,
+            )
+            return 2
+        shares = sized.shares
+        for note in sized.notes:
+            print(f"  note: {note}")
+        print(
+            f"  sizing: {shares} sh, ${sized.notional:,.0f} notional "
+            f"({sized.notional_pct_of_account:.1f}% acct), risk ${sized.risk_dollars:,.0f}"
+        )
+
     pos = Position.new(
         ticker=ticker,
         entry_price=entry,
-        shares=int(args.shares),
+        shares=shares,
         stop=stop,
         target=target,
         notes=args.notes or "",
     )
     store.add(pos)
     store.save()
+
+    # Mark the journal entry as taken if there's a recent matching alert.
+    journal = Journal.load()
+    today = datetime.utcnow().date().isoformat()
+    for window_back in range(0, 10):
+        date_str = (
+            datetime.utcnow().date().fromordinal(
+                datetime.utcnow().date().toordinal() - window_back
+            )
+        ).isoformat()
+        match = next(
+            (e for e in journal.entries
+             if e.ticker == ticker and e.alert_date == date_str and e.status == "PENDING"),
+            None,
+        )
+        if match:
+            match.taken = True
+            journal.save()
+            break
+
     print(
         f"Recorded {pos.shares} shares of {pos.ticker} @ {pos.entry_price:.2f} "
         f"(stop {pos.stop:.2f}, target {pos.target:.2f})."
@@ -250,25 +359,59 @@ def _bundled_sample_watchlist() -> Optional[Path]:
 
 
 def cmd_config(args: argparse.Namespace) -> int:
+    did_something = False
+
     if args.finnhub_key:
         set_finnhub_key(args.finnhub_key)
-        print("Finnhub API key saved. Real-time quotes are now enabled in `watch`.")
-        return 0
+        print("Finnhub API key saved. Real-time quotes enabled in `watch`.")
+        did_something = True
     if args.clear_finnhub_key:
         clear_finnhub_key()
-        print("Finnhub API key cleared. Watch loop will fall back to yfinance.")
-        return 0
-    if args.show:
+        print("Finnhub API key cleared. Watch loop falls back to yfinance.")
+        did_something = True
+
+    account_changes = {
+        "account_size": args.account_size,
+        "risk_per_trade_pct": args.risk_per_trade,
+        "max_position_pct": args.max_position,
+        "max_daily_loss_pct": args.max_daily_loss,
+        "paper_trading": args.paper_trading,
+    }
+    if any(v is not None for v in account_changes.values()):
+        try:
+            updated = set_account_settings(**{k: v for k, v in account_changes.items() if v is not None})
+        except ValueError as e:
+            print(f"Invalid setting: {e}", file=sys.stderr)
+            return 2
+        print(
+            f"Account settings: ${updated.account_size:,.0f} | "
+            f"risk {updated.risk_per_trade_pct:.2f}%/trade | "
+            f"max position {updated.max_position_pct:.0f}% | "
+            f"daily loss limit {updated.max_daily_loss_pct:.1f}% | "
+            f"{'paper' if updated.paper_trading else 'live'}"
+        )
+        did_something = True
+
+    if args.show or not did_something:
         key = get_finnhub_key()
         if key:
             masked = key[:4] + "…" + key[-4:] if len(key) > 8 else "set"
-            print(f"Finnhub API key: {masked} (real-time enabled)")
+            print(f"Finnhub API key:    {masked} (real-time enabled)")
         else:
-            print("No Finnhub API key configured. Watch loop uses yfinance (15-min delayed).")
-        return 0
-
-    print("Nothing to do. Use --finnhub-key, --clear-finnhub-key, or --show.")
-    return 2
+            print(f"Finnhub API key:    not set (yfinance, 15-min delayed)")
+        s = get_account_settings()
+        if s.configured:
+            print(f"Account size:       ${s.account_size:,.0f}")
+            print(f"Risk per trade:     {s.risk_per_trade_pct:.2f}%")
+            print(f"Max position size:  {s.max_position_pct:.0f}%")
+            print(f"Daily loss limit:   {s.max_daily_loss_pct:.1f}%")
+            print(f"Mode:               {'paper' if s.paper_trading else 'LIVE'}")
+        else:
+            print(
+                f"Account size:       not configured\n"
+                f"  → run: stockscanner config --account-size 10000 --risk-per-trade 1"
+            )
+    return 0
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -304,6 +447,118 @@ def cmd_watch(args: argparse.Namespace) -> int:
         strategy=getattr(args, "strategy", DEFAULT_STRATEGY),
     )
     return watch(opts)
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """The daily workflow: positions check + new alerts + journal stats.
+
+    Designed to be the only command you run after the close. Combines:
+      1. Current open positions with HOLD/EXIT signals
+      2. A fresh scan with sized share suggestions
+      3. Auto-resolves any pending journal entries against the latest data
+      4. Performance summary (last 30 / 90 / all)
+    """
+    settings = get_account_settings()
+    journal = Journal.load()
+
+    print("=" * 64)
+    print("DAILY REVIEW")
+    print("=" * 64)
+    print()
+
+    # 1. Positions
+    print("Open positions")
+    print("-" * 64)
+    pos_args = argparse.Namespace()
+    cmd_positions(pos_args)
+
+    # 2. Resolve pending journal entries.
+    print()
+    print("Journal — auto-resolving pending alerts...")
+    transitioned = resolve_pending(journal)
+    journal.save()
+    if transitioned:
+        print(f"  {transitioned} alert(s) resolved this run.")
+
+    # 3. New scan.
+    print()
+    print(f"New {getattr(args, 'strategy', DEFAULT_STRATEGY)} candidates")
+    print("-" * 64)
+    scan_args = argparse.Namespace(
+        strategy=getattr(args, "strategy", DEFAULT_STRATEGY),
+        screen=None,
+        screen_count=25,
+        watchlist=args.watchlist,
+        top=args.top,
+        refresh_universe=False,
+    )
+    cmd_scan(scan_args)
+
+    # 4. Performance summary.
+    print()
+    print("Performance")
+    print("-" * 64)
+    journal = Journal.load()  # reload after scan logged new alerts
+    for label, window in [("last 30 days", 30), ("last 90 days", 90), ("all time", None)]:
+        s = compute_stats(journal, window_days=window)
+        if s.total_alerts == 0:
+            print(f"  {label:<14}  no alerts yet")
+            continue
+        print(
+            f"  {label:<14}  alerts {s.total_alerts:>3}  "
+            f"resolved {s.wins + s.losses + s.breakevens:>3}  "
+            f"win {s.win_rate_pct:>5.1f}%  "
+            f"avg {s.avg_r_multiple:+.2f}R  "
+            f"best {s.best_r:+.2f}R  worst {s.worst_r:+.2f}R"
+        )
+    if not settings.configured:
+        print()
+        print("  ⚠  account size not configured — sizing disabled.")
+        print("     run: stockscanner config --account-size <USD> --risk-per-trade 1")
+
+    return 0
+
+
+def cmd_journal(args: argparse.Namespace) -> int:
+    """Inspect the journal: recent alerts and their outcomes."""
+    journal = Journal.load()
+    if args.resolve:
+        n = resolve_pending(journal)
+        journal.save()
+        print(f"Resolved {n} pending entry/entries.")
+        return 0
+
+    entries = sorted(journal.entries, key=lambda e: e.alert_date, reverse=True)
+    if args.limit:
+        entries = entries[: args.limit]
+
+    if not entries:
+        print("Journal is empty. Run `stockscanner scan` to log alerts.")
+        return 0
+
+    header = (
+        f"{'DATE':<11}{'TICKER':<8}{'STRAT':<10}"
+        f"{'STATUS':<11}{'R':>7}{'TAKEN':>7}"
+    )
+    print(header)
+    print("-" * len(header))
+    for e in entries:
+        r = f"{e.r_multiple:+.2f}" if e.r_multiple is not None else "-"
+        taken = "yes" if e.taken else ""
+        print(
+            f"{e.alert_date:<11}{e.ticker:<8}{e.strategy:<10}"
+            f"{e.status:<11}{r:>7}{taken:>7}"
+        )
+
+    print()
+    s = compute_stats(journal)
+    if s.wins + s.losses + s.breakevens > 0:
+        print(
+            f"All-time: {s.win_rate_pct:.1f}% win rate, "
+            f"{s.avg_r_multiple:+.2f}R avg, "
+            f"best {s.best_r:+.2f}R, worst {s.worst_r:+.2f}R"
+        )
+    return 0
 
 
 def _print_screens() -> None:
@@ -502,8 +757,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_config = sub.add_parser(
         "config",
-        help="Manage settings (Finnhub API key, etc.)",
+        help="Manage settings: account size, risk %, API keys.",
     )
+    # API key
     p_config.add_argument(
         "--finnhub-key",
         help="Save your Finnhub API key for real-time quotes.",
@@ -513,12 +769,72 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Remove the saved Finnhub API key (fall back to yfinance).",
     )
+    # Account / risk settings
+    p_config.add_argument(
+        "--account-size",
+        type=float,
+        help="Total account equity in USD. Required for position sizing.",
+    )
+    p_config.add_argument(
+        "--risk-per-trade",
+        type=float,
+        help="Max % of account at risk per trade (default 1, max 5).",
+    )
+    p_config.add_argument(
+        "--max-position",
+        type=float,
+        help="Max % of account a single position can use (default 25).",
+    )
+    p_config.add_argument(
+        "--max-daily-loss",
+        type=float,
+        help="Daily loss circuit breaker as %% of account (default 3).",
+    )
+    p_config.add_argument(
+        "--paper-trading",
+        type=lambda v: v.lower() in {"1", "true", "yes", "on"},
+        metavar="BOOL",
+        help="Mark new positions as paper-tracked (true/false).",
+    )
     p_config.add_argument(
         "--show",
         action="store_true",
-        help="Show current settings (key is masked).",
+        help="Show current settings.",
     )
     p_config.set_defaults(func=cmd_config)
+
+    p_review = sub.add_parser(
+        "review",
+        help="The daily workflow — positions, new alerts, journal stats.",
+    )
+    p_review.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        default=DEFAULT_STRATEGY,
+        help="Which strategy's scan to run (default: breakout).",
+    )
+    p_review.add_argument(
+        "--watchlist",
+        help="Path or name of a watchlist text file (overrides default).",
+    )
+    p_review.add_argument(
+        "--top", type=int, default=15, help="Max alerts to show in review."
+    )
+    p_review.set_defaults(func=cmd_review)
+
+    p_journal = sub.add_parser(
+        "journal",
+        help="Inspect logged alerts and their auto-tracked outcomes.",
+    )
+    p_journal.add_argument(
+        "--limit", type=int, default=30, help="Show the most recent N entries (default 30)."
+    )
+    p_journal.add_argument(
+        "--resolve",
+        action="store_true",
+        help="Re-check all PENDING entries against latest data and update status.",
+    )
+    p_journal.set_defaults(func=cmd_journal)
 
     return p
 

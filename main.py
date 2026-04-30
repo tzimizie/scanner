@@ -20,47 +20,25 @@ def _pause(prompt: str = "\nPress Enter to close...") -> None:
 
 
 def _run_default_workflow() -> int:
-    """Default behavior on a bare double-click: launch the live watcher
-    against Yahoo's "Day Gainers" screen.
+    """Default behavior on a bare double-click: run the daily review.
 
-    The screen refreshes every cycle so the scanner always tracks the day's
-    biggest movers. Each ticker is then run through the Warrior-style filters
-    (low-priced, big gap, heavy volume); when one matches the setup, an alert
-    fires (console + Windows toast). If the user has explicitly seeded a
-    `default.txt` watchlist, that takes precedence over the screen.
+    Combines (a) exit signals on every open position, (b) a fresh breakout
+    scan with sized share counts, and (c) auto-resolved journal stats so
+    you can see whether the strategy is working for you.
 
-    Press Ctrl-C in the window to stop."""
+    Designed to be a once-a-day routine: open it after the close, see your
+    day in 30 seconds, decide which (if any) trades to place tomorrow."""
     from argparse import Namespace
 
-    from scanner.cli import cmd_watch
-    from scanner.paths import default_watchlist_file
-
-    use_screen = not default_watchlist_file().exists()
-
-    print("=" * 60)
-    print("Stock Scanner — live watch mode (Warrior-style)")
-    if use_screen:
-        print("  Tracking Yahoo's Day Gainers — list refreshes every 5 min.")
-        print("  Alerts when a gainer also matches the gap + volume setup.")
-    else:
-        print(f"  Tracking watchlist: {default_watchlist_file().name}")
-    print("  Press Ctrl-C in this window to stop.")
-    print("=" * 60)
-    print()
+    from scanner.cli import cmd_review
 
     args = Namespace(
-        strategy="warrior",
-        screen="day_gainers" if use_screen else None,
-        screen_count=25,
-        list_screens=False,
-        interval=5,
+        strategy="breakout",
         watchlist=None,
-        top=10,
-        no_notifications=False,
-        after_hours=False,
+        top=15,
     )
     try:
-        return cmd_watch(args)
+        return cmd_review(args)
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0
@@ -70,15 +48,11 @@ def _run_default_workflow() -> int:
 
 
 if __name__ == "__main__":
-    # No arguments → run the live watch mode. The window stays open and the
-    # scanner keeps polling. Anyone running from cmd can still pass explicit
-    # subcommands and they're unchanged.
+    # No arguments → run the daily review. Window stays open after so the
+    # user can read the output before it closes.
     if len(sys.argv) == 1:
         rc = _run_default_workflow()
-        # Only pause if the watcher exited because of an error — a clean
-        # Ctrl-C exit can close the window directly.
-        if rc != 0:
-            _pause()
+        _pause()
         sys.exit(rc)
 
     # Otherwise, run the requested subcommand. Always pause on Windows when
