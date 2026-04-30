@@ -1,12 +1,29 @@
 # Stock Scanner
 
-A command-line breakout scanner that flags stocks meeting a Minervini/Darvas-style
-consolidation-breakout setup, gives you systematic entry/stop/target levels, and
-tracks your open positions so it can tell you when to exit.
+A command-line stock scanner that runs continuously, alerts on setups as they
+form, and tracks open positions so it can tell you when to exit. Two strategies
+are bundled:
 
-> **Important:** This is a screening tool, not financial advice. Most "breakouts"
-> fail. The edge — if any — comes from cutting losses fast and letting winners run,
-> not from prediction accuracy. Backtest before risking real money.
+- **`warrior`** *(default)* — Ross Cameron / Warrior Trading-style day-trading
+  scanner. Looks for low-priced ($1–$20) gappers up ≥ 4% on heavy relative
+  volume (≥ 5× the 50-day avg). Suggested entry = today's high, stop = today's
+  low, 2:1 R/R target.
+- **`breakout`** — Minervini/Darvas-style swing breakouts. Multi-week
+  consolidation near the 52-week high, then break out on volume.
+
+Switch between them with `--strategy warrior` or `--strategy breakout`.
+
+> **Important:** This is a screening tool, not financial advice. Most "setups"
+> fail. The edge — if any — comes from cutting losses fast and letting winners
+> run, not from prediction accuracy. Backtest before risking real money.
+>
+> **Day trading is the highest-risk style** — most retail day traders lose money.
+> The Warrior strategy is built for short-term momentum trading; only use risk
+> capital and tight stops.
+>
+> **Yahoo Finance free data is ~15-min delayed.** Real-time momentum scanning
+> (Trade Ideas, Finviz Elite, Benzinga Pro) requires a paid feed. This tool
+> works best as a "what's in play right now" survey, not a tick-by-tick alert.
 
 ## What it does
 
@@ -20,7 +37,31 @@ tracks your open positions so it can tell you when to exit.
   which to **HOLD**, which to **EXIT**, and why.
 - **`close`** — removes a position from the tracker.
 
-## Strategy
+## Strategies
+
+### Warrior (default)
+
+Models the core of Ross Cameron's day-trading approach: catch low-priced
+small-caps gapping up on huge volume, then ride the bull-flag continuation.
+
+**Filters** (all must be true):
+- Last close in `[$1, $20]`
+- Today's gap-up ≥ 4% from prior close
+- Today's volume ≥ 5 × the 50-day average
+- Up on the day (close > open)
+- Tight intraday range (`(high - low) / open ≤ 12%`) — avoids extended runners
+- Recent run ≥ 5% over the prior 5 sessions (momentum confirmation)
+
+**Suggested levels**:
+- Entry = today's high (intraday breakout)
+- Stop = today's low (or 5% below entry, whichever is tighter)
+- Target = entry + 2 × initial risk (2:1 R/R)
+
+**Best universe** for this strategy: a curated low-float watchlist, NOT the
+S&P 500. Most large caps don't gap like small caps do. See
+`sample_watchlists/warrior_lowfloat.txt` as a starter.
+
+### Breakout
 
 **Setup** (must be true to qualify as a candidate):
 - Price within 5% of its 52-week high
@@ -58,14 +99,16 @@ Drop `stockscanner.exe` anywhere on your PC. It writes its data to
 ## Usage
 
 ```
-stockscanner                      # double-click → live watch mode
+stockscanner                      # double-click → live warrior watch
 stockscanner watch                # same as above, runs until Ctrl-C
+stockscanner watch --strategy breakout
 stockscanner watch --interval 10  # poll every 10 minutes instead of 5
 stockscanner watch --top 5        # at most 5 alerts per cycle
-stockscanner watch --watchlist tickers.txt
+stockscanner watch --watchlist sample_watchlists/warrior_lowfloat.txt
 stockscanner watch --no-notifications
 
-stockscanner scan                 # one-shot scan (no loop)
+stockscanner scan                 # one-shot warrior scan (no loop)
+stockscanner scan --strategy breakout --top 25
 stockscanner enter AAPL --shares 50 --price 178.40
 stockscanner positions            # check all open positions for exit signals
 stockscanner close AAPL

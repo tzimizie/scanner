@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from .data import fetch_history
 from .strategy import BreakoutSignal, find_breakout
 from .universe import load_sp500, load_watchlist, normalize_tickers
+from .warrior import WarriorSignal, find_warrior_setup
 
 
 _ET = ZoneInfo("America/New_York")
@@ -30,6 +31,7 @@ class WatchOptions:
     top: int = 10
     notify: bool = True
     after_hours: bool = False   # if True, don't skip when market is closed
+    strategy: str = "warrior"   # "warrior" or "breakout"
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +129,7 @@ def _enable_windows_ansi() -> None:
 # The main loop
 # ---------------------------------------------------------------------------
 
-def _format_signal(sig: BreakoutSignal) -> str:
+def _format_breakout(sig: BreakoutSignal) -> str:
     return (
         f"{_GREEN}{sig.ticker:<6}{_RESET} "
         f"entry {sig.entry:.2f}  "
@@ -135,6 +137,19 @@ def _format_signal(sig: BreakoutSignal) -> str:
         f"target {sig.target:.2f}  "
         f"risk {sig.risk_pct * 100:.1f}%  "
         f"vol {sig.volume_multiple:.2f}x  "
+        f"score {sig.score:.1f}"
+    )
+
+
+def _format_warrior(sig: WarriorSignal) -> str:
+    return (
+        f"{_GREEN}{sig.ticker:<6}{_RESET} "
+        f"px {sig.last_price:.2f}  "
+        f"gap {sig.gap_pct * 100:.1f}%  "
+        f"rvol {sig.relative_volume:.2f}x  "
+        f"entry {sig.suggested_entry:.2f}  "
+        f"stop {sig.suggested_stop:.2f}  "
+        f"target {sig.suggested_target:.2f}  "
         f"score {sig.score:.1f}"
     )
 
@@ -152,10 +167,17 @@ def watch(opts: WatchOptions) -> int:
     _enable_windows_ansi()
 
     tickers = _resolve_universe(opts)
-    print(f"Watching {len(tickers)} tickers, polling every {opts.interval_minutes} min.")
+    print(
+        f"Watching {len(tickers)} tickers with '{opts.strategy}' strategy, "
+        f"polling every {opts.interval_minutes} min."
+    )
     print(f"Market hours: 9:30–16:00 America/New_York. Press Ctrl-C to stop.")
     if opts.notify:
         print("Alerts: console + Windows toast (best-effort).")
+    if opts.strategy == "warrior":
+        print(
+            f"{_YELLOW}Warrior-style is day-trading only — risk capital and tight stops.{_RESET}"
+        )
     print()
 
     seen_today: Set[str] = set()
@@ -190,44 +212,75 @@ def watch(opts: WatchOptions) -> int:
                 _sleep_interruptible(opts.interval_minutes * 60)
                 continue
 
-            new_signals: list[BreakoutSignal] = []
-            for ticker, df in bars.items():
-                if ticker in seen_today:
-                    continue
-                try:
-                    sig = find_breakout(df, ticker)
-                except Exception:  # noqa: BLE001
-                    continue
-                if sig is not None:
-                    new_signals.append(sig)
-                    seen_today.add(ticker)
+            new_lines, scored_count = _run_strategy(bars, opts.strategy, seen_today)
+            new_lines = new_lines[: opts.top]
 
-            new_signals.sort(key=lambda s: s.score, reverse=True)
-            new_signals = new_signals[: opts.top]
-
-            if new_signals:
+            if new_lines:
+                tickers_alerted = [t for t, _line in new_lines]
                 print(
-                    f"  {_GREEN}*** {len(new_signals)} new candidate(s) "
+                    f"  {_GREEN}*** {len(new_lines)} new candidate(s) "
                     f"at {stamp} ET ***{_RESET}"
                 )
-                for sig in new_signals:
-                    print("  " + _format_signal(sig))
+                for _ticker, line in new_lines:
+                    print("  " + line)
 
                 if opts.notify:
                     _beep()
-                    summary = ", ".join(s.ticker for s in new_signals[:5])
-                    extra = f" (+{len(new_signals) - 5} more)" if len(new_signals) > 5 else ""
+                    summary = ", ".join(tickers_alerted[:5])
+                    extra = f" (+{len(tickers_alerted) - 5} more)" if len(tickers_alerted) > 5 else ""
                     _try_windows_toast(
-                        title=f"Stock Scanner: {len(new_signals)} new setup(s)",
+                        title=f"Stock Scanner: {len(tickers_alerted)} new setup(s)",
                         message=summary + extra,
                     )
             else:
-                print(f"  {_DIM}no new candidates ({len(seen_today)} alerted earlier today){_RESET}")
+                print(
+                    f"  {_DIM}no new candidates "
+                    f"({len(seen_today)} alerted earlier today){_RESET}"
+                )
 
             _sleep_interruptible(opts.interval_minutes * 60)
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0
+
+
+def _run_strategy(
+    bars: dict,
+    strategy: str,
+    seen_today: Set[str],
+) -> tuple[list[tuple[str, str]], int]:
+    """Run the chosen strategy across the fetched bars and return formatted
+    `(ticker, line)` pairs ranked by score. Mutates `seen_today` to dedupe
+    repeat alerts within the same trading day."""
+    if strategy == "breakout":
+        breakout_signals: list[BreakoutSignal] = []
+        for ticker, df in bars.items():
+            if ticker in seen_today:
+                continue
+            try:
+                sig = find_breakout(df, ticker)
+            except Exception:  # noqa: BLE001
+                continue
+            if sig is not None:
+                breakout_signals.append(sig)
+                seen_today.add(ticker)
+        breakout_signals.sort(key=lambda s: s.score, reverse=True)
+        return [(s.ticker, _format_breakout(s)) for s in breakout_signals], len(breakout_signals)
+
+    # warrior
+    warrior_signals: list[WarriorSignal] = []
+    for ticker, df in bars.items():
+        if ticker in seen_today:
+            continue
+        try:
+            sig = find_warrior_setup(df, ticker)
+        except Exception:  # noqa: BLE001
+            continue
+        if sig is not None:
+            warrior_signals.append(sig)
+            seen_today.add(ticker)
+    warrior_signals.sort(key=lambda s: s.score, reverse=True)
+    return [(s.ticker, _format_warrior(s)) for s in warrior_signals], len(warrior_signals)
 
 
 def _sleep_interruptible(seconds: int) -> None:

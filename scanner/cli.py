@@ -17,14 +17,20 @@ from .strategy import (
     find_breakout,
 )
 from .universe import load_sp500, load_watchlist, normalize_tickers
+from .warrior import WarriorSignal, find_warrior_setup
 from .watch import WatchOptions, watch
+
+
+# Available strategy keys for the `--strategy` flag.
+STRATEGIES = ("warrior", "breakout")
+DEFAULT_STRATEGY = "warrior"
 
 
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def _print_signals(signals: List[BreakoutSignal], top: int) -> None:
+def _print_breakout_signals(signals: List[BreakoutSignal], top: int) -> None:
     if not signals:
         print("No breakout candidates today.")
         return
@@ -48,33 +54,76 @@ def _print_signals(signals: List[BreakoutSignal], top: int) -> None:
     print(f"Target = entry + {RISK_REWARD:.0f} x initial risk. Place orders the next session.")
 
 
+def _print_warrior_signals(signals: List[WarriorSignal], top: int) -> None:
+    if not signals:
+        print("No Warrior-style gappers right now.")
+        return
+
+    signals = sorted(signals, key=lambda s: s.score, reverse=True)[:top]
+    header = (
+        f"{'TICKER':<8}{'PRICE':>9}{'GAP%':>8}{'RVOL':>8}"
+        f"{'5D%':>8}{'ENTRY':>9}{'STOP':>9}{'TARGET':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+    for s in signals:
+        print(
+            f"{s.ticker:<8}"
+            f"{s.last_price:>9.2f}"
+            f"{s.gap_pct * 100:>7.1f}%"
+            f"{s.relative_volume:>7.2f}x"
+            f"{s.recent_run_pct * 100:>7.1f}%"
+            f"{s.suggested_entry:>9.2f}"
+            f"{s.suggested_stop:>9.2f}"
+            f"{s.suggested_target:>9.2f}"
+        )
+    print()
+    print(f"{len(signals)} gapper(s). Entry = today's high; stop = today's low; 2:1 R/R target.")
+    print("Day-trading style — risk capital only. Past performance != future results.")
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
 def cmd_scan(args: argparse.Namespace) -> int:
+    strategy = getattr(args, "strategy", DEFAULT_STRATEGY)
+
     if args.watchlist:
         tickers = load_watchlist(Path(args.watchlist))
     else:
         tickers = load_sp500(force_refresh=args.refresh_universe)
     tickers = normalize_tickers(tickers)
-    print(f"Scanning {len(tickers)} ticker(s)...")
+    print(f"Scanning {len(tickers)} ticker(s) with '{strategy}' strategy...")
 
     bars = fetch_history(tickers)
     print(f"Fetched data for {len(bars)} ticker(s).")
 
-    signals: List[BreakoutSignal] = []
-    for ticker, df in bars.items():
-        try:
-            sig = find_breakout(df, ticker)
-        except Exception as e:  # noqa: BLE001
-            print(f"  ! {ticker}: error during analysis: {e}", file=sys.stderr)
-            continue
-        if sig is not None:
-            signals.append(sig)
+    if strategy == "breakout":
+        breakout_signals: List[BreakoutSignal] = []
+        for ticker, df in bars.items():
+            try:
+                sig = find_breakout(df, ticker)
+            except Exception as e:  # noqa: BLE001
+                print(f"  ! {ticker}: error during analysis: {e}", file=sys.stderr)
+                continue
+            if sig is not None:
+                breakout_signals.append(sig)
+        print()
+        _print_breakout_signals(breakout_signals, top=args.top)
+    else:
+        warrior_signals: List[WarriorSignal] = []
+        for ticker, df in bars.items():
+            try:
+                sig = find_warrior_setup(df, ticker)
+            except Exception as e:  # noqa: BLE001
+                print(f"  ! {ticker}: error during analysis: {e}", file=sys.stderr)
+                continue
+            if sig is not None:
+                warrior_signals.append(sig)
+        print()
+        _print_warrior_signals(warrior_signals, top=args.top)
 
-    print()
-    _print_signals(signals, top=args.top)
     return 0
 
 
@@ -132,6 +181,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         top=int(args.top),
         notify=not args.no_notifications,
         after_hours=bool(args.after_hours),
+        strategy=getattr(args, "strategy", DEFAULT_STRATEGY),
     )
     return watch(opts)
 
@@ -194,7 +244,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"stockscanner {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    p_scan = sub.add_parser("scan", help="Screen the universe for breakout setups today.")
+    p_scan = sub.add_parser("scan", help="One-shot screen of the universe.")
+    p_scan.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        default=DEFAULT_STRATEGY,
+        help=(
+            "warrior = Cameron-style gappers (low-priced, big gap, heavy volume); "
+            "breakout = multi-week consolidation breakouts. Default: warrior."
+        ),
+    )
     p_scan.add_argument(
         "--watchlist",
         help="Path to a text file with one ticker per line (overrides S&P 500).",
@@ -229,7 +288,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_watch = sub.add_parser(
         "watch",
-        help="Run continuously, polling on an interval and alerting on new breakouts.",
+        help="Run continuously, polling on an interval and alerting on new setups.",
+    )
+    p_watch.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        default=DEFAULT_STRATEGY,
+        help=(
+            "warrior = Cameron-style gappers (low-priced, big gap, heavy volume); "
+            "breakout = multi-week consolidation breakouts. Default: warrior."
+        ),
     )
     p_watch.add_argument(
         "--interval", type=int, default=5, help="Minutes between scans (default 5)."

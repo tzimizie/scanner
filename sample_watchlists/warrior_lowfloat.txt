@@ -1,0 +1,71 @@
+# Sample Warrior-style watchlist — small/mid-cap names that frequently appear
+# on day-trading scans (low float, $1–$20 range, news-driven movers).
+#
+# This is a STARTER list, not a recommendation. Refresh from your favorite
+# screener (Finviz, Trade Ideas, etc.) regularly — what's "in play" rotates
+# every few weeks.
+#
+# Usage:
+#   stockscanner watch --watchlist sample_watchlists/warrior_lowfloat.txt
+
+# Biotech / pharma — often news-driven gappers
+DNA
+SAVA
+INO
+OCGN
+CYTK
+BNTX
+NVAX
+SAVA
+ATAI
+
+# Cannabis / consumer growth
+TLRY
+SNDL
+ACB
+HEXO
+CGC
+
+# EV / battery / cleantech
+NKLA
+WKHS
+RIDE
+SOLO
+GOEV
+BLNK
+CHPT
+PLUG
+FCEL
+
+# Crypto-adjacent
+MARA
+RIOT
+HUT
+BTBT
+BITF
+HIVE
+
+# China-listed small caps (often gappy)
+NIO
+XPEV
+LI
+TIGR
+FUTU
+
+# Misc retail / meme small caps that recur
+BBBY
+NAKD
+KOSS
+EXPR
+WISH
+CLOV
+SOFI
+PLTR
+
+# Shipping / commodities (cyclical pops)
+GLNG
+DAC
+CTRM
+SHIP
+TOPS
+ESEA
