@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+
+# PyInstaller
+build/
+dist/
+*.manifest
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Local data the user shouldn't commit
+positions.json
+.cache/
+*.log
