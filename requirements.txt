@@ -3,3 +3,10 @@ pandas>=2.1
 numpy>=1.26
 requests>=2.31
 lxml>=5.1
+# yfinance pulls these dynamically — pinning them here so the frozen build
+# always has them.
+multitasking
+frozendict
+platformdirs
+beautifulsoup4
+html5lib

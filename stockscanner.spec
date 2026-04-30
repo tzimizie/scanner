@@ -11,11 +11,29 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        # yfinance / pandas occasionally pull these dynamically; listing them
+        # yfinance / pandas / requests pull these dynamically; listing them
         # explicitly keeps PyInstaller from missing them in the frozen build.
         'lxml.etree',
         'lxml._elementpath',
         'pkg_resources.py2_warn',
+        # yfinance dependencies that aren't auto-detected
+        'multitasking',
+        'frozendict',
+        'platformdirs',
+        'appdirs',
+        'peewee',
+        'beautifulsoup4',
+        'bs4',
+        'html5lib',
+        'soupsieve',
+        # urllib3 / requests
+        'certifi',
+        'charset_normalizer',
+        'idna',
+        # pandas occasionally needs these explicitly
+        'pandas._libs.tslibs.base',
+        'pandas._libs.tslibs.nattype',
+        'pandas._libs.tslibs.np_datetime',
     ],
     hookspath=[],
     hooksconfig={},
