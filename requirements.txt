@@ -10,3 +10,6 @@ frozendict
 platformdirs
 beautifulsoup4
 html5lib
+# Windows toast notifications for the watch loop. Install fails gracefully
+# elsewhere; the runtime check uses a try/except.
+win10toast; sys_platform == "win32"

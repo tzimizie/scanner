@@ -20,42 +20,50 @@ def _pause(prompt: str = "\nPress Enter to close...") -> None:
 
 
 def _run_default_workflow() -> int:
-    """Default behavior on a bare double-click: check open positions, then
-    scan the S&P 500 for new breakouts. Most users want this every day."""
+    """Default behavior on a bare double-click: launch the live watcher.
+
+    The window stays open and the scanner keeps polling the S&P 500 every
+    5 minutes during market hours, alerting on new breakout candidates as
+    they form. Press Ctrl-C in the window to stop."""
     from argparse import Namespace
 
-    from scanner.cli import cmd_positions, cmd_scan
+    from scanner.cli import cmd_watch
 
     print("=" * 60)
-    print("Stock Scanner — running default workflow")
-    print("  1) check open positions for exit signals")
-    print("  2) screen the S&P 500 for breakout setups")
+    print("Stock Scanner — live watch mode")
+    print("  Polling the S&P 500 every 5 minutes during market hours.")
+    print("  New breakout candidates trigger console + toast alerts.")
+    print("  Press Ctrl-C in this window to stop.")
     print("=" * 60)
     print()
 
+    args = Namespace(
+        interval=5,
+        watchlist=None,
+        top=10,
+        no_notifications=False,
+        after_hours=False,
+    )
     try:
-        print("--- Open positions ---")
-        cmd_positions(Namespace())
-
-        print()
-        print("--- Breakout candidates ---")
-        cmd_scan(Namespace(watchlist=None, top=25, refresh_universe=False))
+        return cmd_watch(args)
     except KeyboardInterrupt:
-        print("\nInterrupted.")
-        return 130
+        print("\nStopped.")
+        return 0
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         return 1
-    return 0
 
 
 if __name__ == "__main__":
-    # No arguments → assume a Windows double-click and run the default
-    # workflow so the user gets something useful. From cmd you can still pass
-    # explicit subcommands and they're unchanged.
+    # No arguments → run the live watch mode. The window stays open and the
+    # scanner keeps polling. Anyone running from cmd can still pass explicit
+    # subcommands and they're unchanged.
     if len(sys.argv) == 1:
         rc = _run_default_workflow()
-        _pause()
+        # Only pause if the watcher exited because of an error — a clean
+        # Ctrl-C exit can close the window directly.
+        if rc != 0:
+            _pause()
         sys.exit(rc)
 
     # Otherwise, run the requested subcommand. Always pause on Windows when

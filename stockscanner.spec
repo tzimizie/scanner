@@ -34,6 +34,10 @@ a = Analysis(
         'pandas._libs.tslibs.base',
         'pandas._libs.tslibs.nattype',
         'pandas._libs.tslibs.np_datetime',
+        # Windows toast notifications (optional at runtime)
+        'win10toast',
+        'pythoncom',
+        'pywintypes',
     ],
     hookspath=[],
     hooksconfig={},

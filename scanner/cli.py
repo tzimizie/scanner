@@ -17,6 +17,7 @@ from .strategy import (
     find_breakout,
 )
 from .universe import load_sp500, load_watchlist, normalize_tickers
+from .watch import WatchOptions, watch
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +125,17 @@ def cmd_close(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    opts = WatchOptions(
+        interval_minutes=int(args.interval),
+        watchlist=Path(args.watchlist) if args.watchlist else None,
+        top=int(args.top),
+        notify=not args.no_notifications,
+        after_hours=bool(args.after_hours),
+    )
+    return watch(opts)
+
+
 def cmd_positions(args: argparse.Namespace) -> int:
     store = PositionStore.load()
     if not store.positions:
@@ -214,6 +226,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "positions", help="Check exit signals for every open position."
     )
     p_pos.set_defaults(func=cmd_positions)
+
+    p_watch = sub.add_parser(
+        "watch",
+        help="Run continuously, polling on an interval and alerting on new breakouts.",
+    )
+    p_watch.add_argument(
+        "--interval", type=int, default=5, help="Minutes between scans (default 5)."
+    )
+    p_watch.add_argument(
+        "--watchlist",
+        help="Path to a text file with one ticker per line (overrides S&P 500).",
+    )
+    p_watch.add_argument(
+        "--top", type=int, default=10, help="Max alerts to print per cycle."
+    )
+    p_watch.add_argument(
+        "--no-notifications",
+        action="store_true",
+        help="Disable Windows toast / beep alerts (console output only).",
+    )
+    p_watch.add_argument(
+        "--after-hours",
+        action="store_true",
+        help="Keep scanning outside US market hours (otherwise we sleep until open).",
+    )
+    p_watch.set_defaults(func=cmd_watch)
 
     return p
 
