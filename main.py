@@ -5,75 +5,73 @@ import traceback
 from scanner.cli import main
 
 
-def _was_double_clicked() -> bool:
-    """Best-effort: when launched via Explorer there's no parent terminal, so
-    the console window will close as soon as we exit. We detect that and pause
-    on errors / no-args so the user can read the message."""
-    if sys.platform != "win32":
-        return False
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def _pause(prompt: str = "\nPress Enter to close...") -> None:
+    """Block until Enter so a Windows console window doesn't vanish before
+    the user can read what happened. No-op on non-Windows."""
+    if not _IS_WINDOWS:
+        return
     try:
-        import ctypes
+        input(prompt)
+    except EOFError:
+        pass
 
-        kernel32 = ctypes.windll.kernel32
-        # GetConsoleProcessList returns the count of processes attached to the
-        # console. If we're the only one, the console belongs to us and will
-        # vanish when we exit.
-        processes = (ctypes.c_ulong * 4)()
-        count = kernel32.GetConsoleProcessList(processes, 4)
-        return count <= 1
+
+def _run_default_workflow() -> int:
+    """Default behavior on a bare double-click: check open positions, then
+    scan the S&P 500 for new breakouts. Most users want this every day."""
+    from argparse import Namespace
+
+    from scanner.cli import cmd_positions, cmd_scan
+
+    print("=" * 60)
+    print("Stock Scanner — running default workflow")
+    print("  1) check open positions for exit signals")
+    print("  2) screen the S&P 500 for breakout setups")
+    print("=" * 60)
+    print()
+
+    try:
+        print("--- Open positions ---")
+        cmd_positions(Namespace())
+
+        print()
+        print("--- Breakout candidates ---")
+        cmd_scan(Namespace(watchlist=None, top=25, refresh_universe=False))
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        return 130
     except Exception:  # noqa: BLE001
-        return False
-
-
-def _pause_if_needed() -> None:
-    if _was_double_clicked():
-        try:
-            input("\nPress Enter to close...")
-        except EOFError:
-            pass
+        traceback.print_exc()
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    double_clicked = _was_double_clicked()
+    # No arguments → assume a Windows double-click and run the default
+    # workflow so the user gets something useful. From cmd you can still pass
+    # explicit subcommands and they're unchanged.
+    if len(sys.argv) == 1:
+        rc = _run_default_workflow()
+        _pause()
+        sys.exit(rc)
 
-    # When double-clicked with no arguments, default to a scan (with both the
-    # market screen AND any open positions checked) — that's what the user
-    # actually wants 99% of the time. Anyone running from cmd can still pass
-    # explicit subcommands.
-    if len(sys.argv) == 1 and double_clicked:
-        print("=" * 60)
-        print("Stock Scanner — running default workflow:")
-        print("  1) check open positions for exit signals")
-        print("  2) screen the S&P 500 for breakout setups")
-        print("=" * 60)
-        print()
-        try:
-            from scanner.cli import cmd_positions, cmd_scan
-            from argparse import Namespace
-
-            print("--- Open positions ---")
-            cmd_positions(Namespace())
-
-            print()
-            print("--- Breakout candidates ---")
-            cmd_scan(Namespace(watchlist=None, top=25, refresh_universe=False))
-        except KeyboardInterrupt:
-            print("\nInterrupted.")
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-        _pause_if_needed()
-        sys.exit(0)
-
+    # Otherwise, run the requested subcommand. Always pause on Windows when
+    # something went wrong so the error message is readable before the
+    # console closes — `_was_double_clicked` heuristics turned out to be
+    # unreliable on some Windows setups.
     try:
         sys.exit(main() or 0)
-    except SystemExit:
-        # argparse and explicit sys.exit() — already an int code, just pause.
-        _pause_if_needed()
+    except SystemExit as e:
+        if e.code is not None and e.code != 0:
+            _pause()
         raise
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(130)
     except Exception:  # noqa: BLE001 - top-level safety net
         traceback.print_exc()
-        _pause_if_needed()
+        _pause()
         sys.exit(1)
