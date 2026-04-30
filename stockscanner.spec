@@ -9,7 +9,11 @@ a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[
+        # Bundle the starter watchlist so `watchlists --install-sample` works
+        # without needing the source tree.
+        ('sample_watchlists', 'sample_watchlists'),
+    ],
     hiddenimports=[
         # yfinance / pandas / requests pull these dynamically; listing them
         # explicitly keeps PyInstaller from missing them in the frozen build.

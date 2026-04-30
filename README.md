@@ -145,10 +145,39 @@ do, place the order with your broker, then run `enter` to start tracking the
 position. Run `positions` daily after the close — when it says EXIT, you exit
 the next session.
 
-## Universe
+## Universe & watchlists
 
-`scan` defaults to the S&P 500 (fetched from Wikipedia, cached for 7 days). Override
-with `--watchlist path/to/tickers.txt` (one ticker per line). Lines starting with
+`scan` and `watch` look for tickers in this order:
+
+1. `--watchlist <name-or-path>` (if you pass it)
+2. `%USERPROFILE%\.stockscanner\watchlists\default.txt` (auto-loaded for double-click)
+3. The S&P 500 (fetched from Wikipedia, cached for 7 days)
+
+You don't have to pass a full path. Drop your `.txt` files into
+`%USERPROFILE%\.stockscanner\watchlists\` and reference them by name:
+
+```
+stockscanner watch --watchlist warrior_lowfloat
+stockscanner watch --watchlist my_movers.txt
+```
+
+Easiest way to seed that folder:
+
+```
+stockscanner watchlists --install-sample
+```
+
+That copies the bundled `warrior_lowfloat.txt` to your watchlists folder AND
+sets it as the double-click default (`default.txt`). After that, double-clicking
+`stockscanner.exe` runs the watch loop on that list automatically.
+
+To list / inspect what's there:
+
+```
+stockscanner watchlists
+```
+
+Watchlist file format: one ticker per line. Blank lines and lines starting with
 `#` are ignored.
 
 ## Data source

@@ -29,10 +29,18 @@ def _run_default_workflow() -> int:
 
     from scanner.cli import cmd_watch
 
+    from scanner.paths import default_watchlist_file
+
+    universe_label = (
+        f"watchlist {default_watchlist_file().name}"
+        if default_watchlist_file().exists()
+        else "S&P 500"
+    )
+
     print("=" * 60)
     print("Stock Scanner — live watch mode")
-    print("  Polling the S&P 500 every 5 minutes during market hours.")
-    print("  New breakout candidates trigger console + toast alerts.")
+    print(f"  Polling the {universe_label} every 5 minutes during market hours.")
+    print("  New candidates trigger console + toast alerts.")
     print("  Press Ctrl-C in this window to stop.")
     print("=" * 60)
     print()

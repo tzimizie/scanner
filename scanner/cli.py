@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from . import __version__
 from .config import clear_finnhub_key, get_finnhub_key, set_finnhub_key
 from .data import fetch_history, fetch_one
+from .paths import default_watchlist_file, resolve_watchlist, watchlists_dir
 from .positions import Position, PositionStore
 from .strategy import (
     STOP_PCT,
@@ -91,7 +92,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     strategy = getattr(args, "strategy", DEFAULT_STRATEGY)
 
     if args.watchlist:
-        tickers = load_watchlist(Path(args.watchlist))
+        tickers = load_watchlist(resolve_watchlist(args.watchlist))
+    elif default_watchlist_file().exists():
+        tickers = load_watchlist(default_watchlist_file())
+        print(f"Using default watchlist: {default_watchlist_file()}")
     else:
         tickers = load_sp500(force_refresh=args.refresh_universe)
     tickers = normalize_tickers(tickers)
@@ -175,6 +179,61 @@ def cmd_close(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watchlists(args: argparse.Namespace) -> int:
+    """List/manage local watchlists in ~/.stockscanner/watchlists/."""
+    wl_dir = watchlists_dir()
+    print(f"Watchlists folder: {wl_dir}")
+
+    if args.install_sample:
+        sample = _bundled_sample_watchlist()
+        if sample is None:
+            print("  ! Bundled sample not found in this build.")
+            return 1
+        target = wl_dir / "warrior_lowfloat.txt"
+        target.write_text(sample.read_text())
+        print(f"  Installed: {target}")
+        # Also point default.txt at it so double-click picks it up automatically.
+        default = default_watchlist_file()
+        if not default.exists():
+            default.write_text(sample.read_text())
+            print(f"  Set as default: {default}")
+        return 0
+
+    files = sorted(wl_dir.glob("*.txt"))
+    if not files:
+        print("  (empty)")
+        print()
+        print("Drop a .txt file with one ticker per line into that folder, then run:")
+        print("  stockscanner watch --watchlist <name>")
+        print()
+        print("Or run `stockscanner watchlists --install-sample` to copy the bundled "
+              "warrior_lowfloat.txt as a starter (also becomes the double-click default).")
+        return 0
+
+    default = default_watchlist_file()
+    for f in files:
+        marker = "  (default)" if f.resolve() == default.resolve() else ""
+        line_count = sum(
+            1 for line in f.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
+        print(f"  {f.name:<30} {line_count:>4} tickers{marker}")
+    return 0
+
+
+def _bundled_sample_watchlist() -> Optional[Path]:
+    """Locate the sample watchlist whether we're running from source or from
+    a PyInstaller --onefile build."""
+    # PyInstaller extracts bundled data to sys._MEIPASS at runtime.
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidate = Path(sys._MEIPASS) / "sample_watchlists" / "warrior_lowfloat.txt"
+        if candidate.exists():
+            return candidate
+    # Source / dev tree
+    candidate = Path(__file__).resolve().parent.parent / "sample_watchlists" / "warrior_lowfloat.txt"
+    return candidate if candidate.exists() else None
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     if args.finnhub_key:
         set_finnhub_key(args.finnhub_key)
@@ -198,9 +257,16 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
+    if args.watchlist:
+        watchlist_path: Optional[Path] = resolve_watchlist(args.watchlist)
+    elif default_watchlist_file().exists():
+        watchlist_path = default_watchlist_file()
+    else:
+        watchlist_path = None
+
     opts = WatchOptions(
         interval_minutes=int(args.interval),
-        watchlist=Path(args.watchlist) if args.watchlist else None,
+        watchlist=watchlist_path,
         top=int(args.top),
         notify=not args.no_notifications,
         after_hours=bool(args.after_hours),
@@ -343,6 +409,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Keep scanning outside US market hours (otherwise we sleep until open).",
     )
     p_watch.set_defaults(func=cmd_watch)
+
+    p_wl = sub.add_parser(
+        "watchlists",
+        help="List local watchlists or install the bundled sample.",
+    )
+    p_wl.add_argument(
+        "--install-sample",
+        action="store_true",
+        help="Copy the bundled warrior_lowfloat.txt into the watchlists folder.",
+    )
+    p_wl.set_defaults(func=cmd_watchlists)
 
     p_config = sub.add_parser(
         "config",
