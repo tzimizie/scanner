@@ -20,32 +20,39 @@ def _pause(prompt: str = "\nPress Enter to close...") -> None:
 
 
 def _run_default_workflow() -> int:
-    """Default behavior on a bare double-click: launch the live watcher.
+    """Default behavior on a bare double-click: launch the live watcher
+    against Yahoo's "Day Gainers" screen.
 
-    The window stays open and the scanner keeps polling the S&P 500 every
-    5 minutes during market hours, alerting on new breakout candidates as
-    they form. Press Ctrl-C in the window to stop."""
+    The screen refreshes every cycle so the scanner always tracks the day's
+    biggest movers. Each ticker is then run through the Warrior-style filters
+    (low-priced, big gap, heavy volume); when one matches the setup, an alert
+    fires (console + Windows toast). If the user has explicitly seeded a
+    `default.txt` watchlist, that takes precedence over the screen.
+
+    Press Ctrl-C in the window to stop."""
     from argparse import Namespace
 
     from scanner.cli import cmd_watch
-
     from scanner.paths import default_watchlist_file
 
-    universe_label = (
-        f"watchlist {default_watchlist_file().name}"
-        if default_watchlist_file().exists()
-        else "S&P 500"
-    )
+    use_screen = not default_watchlist_file().exists()
 
     print("=" * 60)
-    print("Stock Scanner — live watch mode")
-    print(f"  Polling the {universe_label} every 5 minutes during market hours.")
-    print("  New candidates trigger console + toast alerts.")
+    print("Stock Scanner — live watch mode (Warrior-style)")
+    if use_screen:
+        print("  Tracking Yahoo's Day Gainers — list refreshes every 5 min.")
+        print("  Alerts when a gainer also matches the gap + volume setup.")
+    else:
+        print(f"  Tracking watchlist: {default_watchlist_file().name}")
     print("  Press Ctrl-C in this window to stop.")
     print("=" * 60)
     print()
 
     args = Namespace(
+        strategy="warrior",
+        screen="day_gainers" if use_screen else None,
+        screen_count=25,
+        list_screens=False,
         interval=5,
         watchlist=None,
         top=10,

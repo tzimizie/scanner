@@ -11,6 +11,7 @@ from .config import clear_finnhub_key, get_finnhub_key, set_finnhub_key
 from .data import fetch_history, fetch_one
 from .paths import default_watchlist_file, resolve_watchlist, watchlists_dir
 from .positions import Position, PositionStore
+from .screeners import SCREENS, list_screens
 from .strategy import (
     STOP_PCT,
     RISK_REWARD,
@@ -91,7 +92,21 @@ def _print_warrior_signals(signals: List[WarriorSignal], top: int) -> None:
 def cmd_scan(args: argparse.Namespace) -> int:
     strategy = getattr(args, "strategy", DEFAULT_STRATEGY)
 
-    if args.watchlist:
+    if args.screen:
+        from .screeners import fetch_screen
+        if args.screen not in SCREENS:
+            print(
+                f"Unknown screen '{args.screen}'. Run `stockscanner scan --list-screens`.",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"Pulling Yahoo screen '{args.screen}' ({SCREENS[args.screen]})...")
+        tickers = fetch_screen(args.screen, count=args.screen_count)
+        if not tickers:
+            print("Screen returned no tickers (Yahoo may be throttling). Try again.")
+            return 1
+        print(f"Loaded {len(tickers)} tickers from screen.")
+    elif args.watchlist:
         tickers = load_watchlist(resolve_watchlist(args.watchlist))
     elif default_watchlist_file().exists():
         tickers = load_watchlist(default_watchlist_file())
@@ -257,9 +272,23 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
+    screen = None
+    if args.screen:
+        if args.screen not in SCREENS:
+            print(
+                f"Unknown screen '{args.screen}'. Run `stockscanner watch --list-screens`.",
+                file=sys.stderr,
+            )
+            return 2
+        screen = args.screen
+
+    if args.watchlist and screen:
+        print("Pass either --watchlist or --screen, not both.", file=sys.stderr)
+        return 2
+
     if args.watchlist:
         watchlist_path: Optional[Path] = resolve_watchlist(args.watchlist)
-    elif default_watchlist_file().exists():
+    elif screen is None and default_watchlist_file().exists():
         watchlist_path = default_watchlist_file()
     else:
         watchlist_path = None
@@ -267,12 +296,23 @@ def cmd_watch(args: argparse.Namespace) -> int:
     opts = WatchOptions(
         interval_minutes=int(args.interval),
         watchlist=watchlist_path,
+        screen=screen,
+        screen_count=int(args.screen_count),
         top=int(args.top),
         notify=not args.no_notifications,
         after_hours=bool(args.after_hours),
         strategy=getattr(args, "strategy", DEFAULT_STRATEGY),
     )
     return watch(opts)
+
+
+def _print_screens() -> None:
+    print("Available Yahoo predefined screens:")
+    print()
+    for sid, desc in list_screens():
+        print(f"  {sid:<28} {desc}")
+    print()
+    print("Use one with: stockscanner watch --screen day_gainers")
 
 
 def cmd_positions(args: argparse.Namespace) -> int:
@@ -344,8 +384,22 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_scan.add_argument(
+        "--screen",
+        help=(
+            "Pull the universe live from a Yahoo predefined screen "
+            "(day_gainers, most_actives, small_cap_gainers, ...). "
+            "Run --list-screens for the full list."
+        ),
+    )
+    p_scan.add_argument(
+        "--screen-count",
+        type=int,
+        default=25,
+        help="How many tickers to pull from the screen (default 25).",
+    )
+    p_scan.add_argument(
         "--watchlist",
-        help="Path to a text file with one ticker per line (overrides S&P 500).",
+        help="Path or name of a watchlist text file (overrides default).",
     )
     p_scan.add_argument(
         "--top", type=int, default=25, help="Show only the top N candidates by score."
@@ -389,11 +443,29 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_watch.add_argument(
+        "--screen",
+        help=(
+            "Pull the universe live from a Yahoo predefined screen and refresh "
+            "it every cycle. Best fit for day-trading: --screen day_gainers."
+        ),
+    )
+    p_watch.add_argument(
+        "--screen-count",
+        type=int,
+        default=25,
+        help="How many tickers to pull from the screen each cycle (default 25).",
+    )
+    p_watch.add_argument(
+        "--list-screens",
+        action="store_true",
+        help="Print the available screen names and exit.",
+    )
+    p_watch.add_argument(
         "--interval", type=int, default=5, help="Minutes between scans (default 5)."
     )
     p_watch.add_argument(
         "--watchlist",
-        help="Path to a text file with one ticker per line (overrides S&P 500).",
+        help="Path or name of a watchlist text file (mutually exclusive with --screen).",
     )
     p_watch.add_argument(
         "--top", type=int, default=10, help="Max alerts to print per cycle."
@@ -408,7 +480,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep scanning outside US market hours (otherwise we sleep until open).",
     )
-    p_watch.set_defaults(func=cmd_watch)
+
+    def _watch_dispatch(args: argparse.Namespace) -> int:
+        if args.list_screens:
+            _print_screens()
+            return 0
+        return cmd_watch(args)
+
+    p_watch.set_defaults(func=_watch_dispatch)
 
     p_wl = sub.add_parser(
         "watchlists",

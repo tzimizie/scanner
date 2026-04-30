@@ -147,13 +147,34 @@ the next session.
 
 ## Universe & watchlists
 
-`scan` and `watch` look for tickers in this order:
+There are three ways to tell the scanner what to scan, in priority order:
 
-1. `--watchlist <name-or-path>` (if you pass it)
-2. `%USERPROFILE%\.stockscanner\watchlists\default.txt` (auto-loaded for double-click)
-3. The S&P 500 (fetched from Wikipedia, cached for 7 days)
+1. **`--screen <name>`** — pull a live universe from Yahoo's predefined screens
+   (`day_gainers`, `most_actives`, `small_cap_gainers`, etc.). The list refreshes
+   every cycle, so the scanner automatically follows the stocks moving today.
+   This is the recommended setup for Warrior-style day trading.
+2. **`--watchlist <name-or-path>`** — your own static list.
+3. **`%USERPROFILE%\.stockscanner\watchlists\default.txt`** — auto-loaded if it
+   exists and you didn't pass `--screen` or `--watchlist`.
+4. **S&P 500** — fallback when nothing else is configured.
 
-You don't have to pass a full path. Drop your `.txt` files into
+**Default double-click behavior**: `watch --strategy warrior --screen day_gainers`.
+You don't need to set anything up — open the .exe and the scanner tracks the
+day's top gainers, alerting when one matches the Warrior gap+volume setup.
+
+To see all available screens:
+
+```
+stockscanner watch --list-screens
+```
+
+Common picks:
+- `day_gainers` — biggest % gainers today (default)
+- `most_actives` — heaviest volume today
+- `small_cap_gainers` — small-cap names up the most
+- `most_shorted_stocks` — squeeze candidates
+
+You don't have to pass a full path for static lists. Drop your `.txt` files into
 `%USERPROFILE%\.stockscanner\watchlists\` and reference them by name:
 
 ```

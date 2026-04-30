@@ -19,6 +19,7 @@ import pandas as pd
 from .config import get_finnhub_key
 from .data import fetch_history
 from .finnhub import FinnhubClient, LiveQuote
+from .screeners import fetch_screen
 from .strategy import BreakoutSignal, find_breakout
 from .universe import load_sp500, load_watchlist, normalize_tickers
 from .warrior import WarriorSignal, find_warrior_setup
@@ -32,6 +33,8 @@ _IS_WINDOWS = sys.platform == "win32"
 class WatchOptions:
     interval_minutes: int = 5
     watchlist: Optional[Path] = None
+    screen: Optional[str] = None     # Yahoo screen ID (e.g. "day_gainers")
+    screen_count: int = 25
     top: int = 10
     notify: bool = True
     after_hours: bool = False   # if True, don't skip when market is closed
@@ -159,7 +162,12 @@ def _format_warrior(sig: WarriorSignal) -> str:
 
 
 def _resolve_universe(opts: WatchOptions) -> list[str]:
-    if opts.watchlist:
+    if opts.screen:
+        tickers = fetch_screen(opts.screen, count=opts.screen_count)
+        if not tickers:
+            # First-call fallback so we don't start with an empty universe.
+            tickers = load_sp500()
+    elif opts.watchlist:
         tickers = load_watchlist(opts.watchlist)
     else:
         tickers = load_sp500()
@@ -180,9 +188,14 @@ def watch(opts: WatchOptions) -> int:
         except ValueError as e:
             print(f"{_YELLOW}Finnhub disabled: {e}{_RESET}")
 
+    universe_label = (
+        f"Yahoo screen '{opts.screen}'" if opts.screen
+        else f"watchlist {opts.watchlist.name}" if opts.watchlist
+        else "S&P 500"
+    )
     print(
-        f"Watching {len(tickers)} tickers with '{opts.strategy}' strategy, "
-        f"polling every {opts.interval_minutes} min."
+        f"Watching {universe_label} ({len(tickers)} tickers) with '{opts.strategy}' "
+        f"strategy, polling every {opts.interval_minutes} min."
     )
     print(f"Market hours: 9:30–16:00 America/New_York. Press Ctrl-C to stop.")
     if opts.notify:
@@ -226,6 +239,22 @@ def watch(opts: WatchOptions) -> int:
                 continue
 
             stamp = now.strftime("%H:%M:%S")
+
+            # Refresh the universe each cycle when a Yahoo screen is in use,
+            # so the scanner always tracks the current market leaders.
+            if opts.screen:
+                fresh = fetch_screen(opts.screen, count=opts.screen_count)
+                if fresh:
+                    if set(fresh) != set(tickers):
+                        added = sorted(set(fresh) - set(tickers))
+                        removed = sorted(set(tickers) - set(fresh))
+                        if added or removed:
+                            print(
+                                f"{_DIM}[{stamp} ET] universe refresh: "
+                                f"+{len(added)} -{len(removed)} "
+                                f"(now {len(fresh)} tickers){_RESET}"
+                            )
+                    tickers = normalize_tickers(fresh)
 
             if finnhub is not None:
                 # Refresh the historical volume baseline once per trading day.
