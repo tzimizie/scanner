@@ -34,18 +34,33 @@ def _pause_if_needed() -> None:
 
 
 if __name__ == "__main__":
-    # Argparse with `required=True` exits with code 2 when no subcommand is
-    # given. Show usage hints and pause so a double-click user sees something.
-    if len(sys.argv) == 1 and _was_double_clicked():
-        print("stockscanner — usage:")
-        print("  stockscanner scan                 # screen S&P 500 for setups")
-        print("  stockscanner scan --top 10        # show 10 strongest setups")
-        print("  stockscanner enter NVDA --shares 50 --price 875.20")
-        print("  stockscanner positions            # check open positions")
-        print("  stockscanner close NVDA")
+    double_clicked = _was_double_clicked()
+
+    # When double-clicked with no arguments, default to a scan (with both the
+    # market screen AND any open positions checked) — that's what the user
+    # actually wants 99% of the time. Anyone running from cmd can still pass
+    # explicit subcommands.
+    if len(sys.argv) == 1 and double_clicked:
+        print("=" * 60)
+        print("Stock Scanner — running default workflow:")
+        print("  1) check open positions for exit signals")
+        print("  2) screen the S&P 500 for breakout setups")
+        print("=" * 60)
         print()
-        print("Run it from a cmd window for live output, or pass --help to any")
-        print("command for the full option list.")
+        try:
+            from scanner.cli import cmd_positions, cmd_scan
+            from argparse import Namespace
+
+            print("--- Open positions ---")
+            cmd_positions(Namespace())
+
+            print()
+            print("--- Breakout candidates ---")
+            cmd_scan(Namespace(watchlist=None, top=25, refresh_universe=False))
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
         _pause_if_needed()
         sys.exit(0)
 
