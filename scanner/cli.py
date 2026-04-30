@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from . import __version__
+from .config import clear_finnhub_key, get_finnhub_key, set_finnhub_key
 from .data import fetch_history, fetch_one
 from .positions import Position, PositionStore
 from .strategy import (
@@ -174,6 +175,28 @@ def cmd_close(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_config(args: argparse.Namespace) -> int:
+    if args.finnhub_key:
+        set_finnhub_key(args.finnhub_key)
+        print("Finnhub API key saved. Real-time quotes are now enabled in `watch`.")
+        return 0
+    if args.clear_finnhub_key:
+        clear_finnhub_key()
+        print("Finnhub API key cleared. Watch loop will fall back to yfinance.")
+        return 0
+    if args.show:
+        key = get_finnhub_key()
+        if key:
+            masked = key[:4] + "…" + key[-4:] if len(key) > 8 else "set"
+            print(f"Finnhub API key: {masked} (real-time enabled)")
+        else:
+            print("No Finnhub API key configured. Watch loop uses yfinance (15-min delayed).")
+        return 0
+
+    print("Nothing to do. Use --finnhub-key, --clear-finnhub-key, or --show.")
+    return 2
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     opts = WatchOptions(
         interval_minutes=int(args.interval),
@@ -320,6 +343,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Keep scanning outside US market hours (otherwise we sleep until open).",
     )
     p_watch.set_defaults(func=cmd_watch)
+
+    p_config = sub.add_parser(
+        "config",
+        help="Manage settings (Finnhub API key, etc.)",
+    )
+    p_config.add_argument(
+        "--finnhub-key",
+        help="Save your Finnhub API key for real-time quotes.",
+    )
+    p_config.add_argument(
+        "--clear-finnhub-key",
+        action="store_true",
+        help="Remove the saved Finnhub API key (fall back to yfinance).",
+    )
+    p_config.add_argument(
+        "--show",
+        action="store_true",
+        help="Show current settings (key is masked).",
+    )
+    p_config.set_defaults(func=cmd_config)
 
     return p
 

@@ -94,7 +94,32 @@ You don't need Python. Grab the latest `stockscanner.exe`:
   the first time; the resulting `dist\stockscanner.exe` is self-contained).
 
 Drop `stockscanner.exe` anywhere on your PC. It writes its data to
-`%USERPROFILE%\.stockscanner\` (cache, positions, last scan).
+`%USERPROFILE%\.stockscanner\` (cache, positions, last scan, API keys).
+
+## Real-time data (optional but strongly recommended for `warrior`)
+
+Yahoo's free feed is ~15 minutes delayed, which means you usually see Warrior-style
+gappers after the first leg of the move. Wire in **Finnhub's free tier** for
+real-time prices:
+
+1. Sign up at https://finnhub.io/register (free)
+2. Copy your API key from the dashboard
+3. Run once: `stockscanner config --finnhub-key YOUR_KEY_HERE`
+
+The watch loop now uses Finnhub for live prices (~1s latency) and falls back to
+yfinance for the 50-day average volume baseline (still 15-min delayed — Finnhub's
+free tier doesn't expose intraday volume). The price-driven parts of the strategy
+(gap %, intraday range, current price vs. levels) become real-time, which is the
+piece that matters most for catching a setup before it runs.
+
+The free tier caps you at 60 API calls/minute; the scanner self-throttles to 55.
+A 50-ticker watchlist polled every minute fits comfortably. If you want to scan
+the full S&P 500 in real-time, you'd need Finnhub's paid plan or Polygon.io.
+
+```
+stockscanner config --show              # check current settings
+stockscanner config --clear-finnhub-key # back to delayed yfinance only
+```
 
 ## Usage
 

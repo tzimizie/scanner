@@ -11,10 +11,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional, Set
+from typing import Iterable, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
+from .config import get_finnhub_key
 from .data import fetch_history
+from .finnhub import FinnhubClient, LiveQuote
 from .strategy import BreakoutSignal, find_breakout
 from .universe import load_sp500, load_watchlist, normalize_tickers
 from .warrior import WarriorSignal, find_warrior_setup
@@ -167,6 +171,15 @@ def watch(opts: WatchOptions) -> int:
     _enable_windows_ansi()
 
     tickers = _resolve_universe(opts)
+
+    finnhub_key = get_finnhub_key()
+    finnhub: Optional[FinnhubClient] = None
+    if finnhub_key:
+        try:
+            finnhub = FinnhubClient(finnhub_key)
+        except ValueError as e:
+            print(f"{_YELLOW}Finnhub disabled: {e}{_RESET}")
+
     print(
         f"Watching {len(tickers)} tickers with '{opts.strategy}' strategy, "
         f"polling every {opts.interval_minutes} min."
@@ -174,11 +187,21 @@ def watch(opts: WatchOptions) -> int:
     print(f"Market hours: 9:30–16:00 America/New_York. Press Ctrl-C to stop.")
     if opts.notify:
         print("Alerts: console + Windows toast (best-effort).")
+    if finnhub:
+        print(f"{_GREEN}Finnhub real-time prices enabled (~1s latency).{_RESET}")
+        print(f"{_DIM}Volume baseline still uses yfinance (15-min delayed).{_RESET}")
+    else:
+        print(f"{_DIM}Using yfinance (15-min delayed). Run `stockscanner config --finnhub-key XXX` for real-time.{_RESET}")
     if opts.strategy == "warrior":
         print(
             f"{_YELLOW}Warrior-style is day-trading only — risk capital and tight stops.{_RESET}"
         )
     print()
+
+    # When Finnhub is enabled we cache yfinance history for the 50-day volume
+    # baseline and refresh it once per trading day.
+    history_cache: dict[str, pd.DataFrame] = {}
+    history_cache_day: Optional[str] = None
 
     seen_today: Set[str] = set()
     seen_day: Optional[str] = None
@@ -203,14 +226,43 @@ def watch(opts: WatchOptions) -> int:
                 continue
 
             stamp = now.strftime("%H:%M:%S")
-            print(f"{_DIM}[{stamp} ET] cycle {cycle}: fetching {len(tickers)} tickers...{_RESET}")
 
-            try:
-                bars = fetch_history(tickers)
-            except Exception as e:  # noqa: BLE001
-                print(f"  {_YELLOW}data fetch failed: {e}{_RESET}")
-                _sleep_interruptible(opts.interval_minutes * 60)
-                continue
+            if finnhub is not None:
+                # Refresh the historical volume baseline once per trading day.
+                if history_cache_day != today:
+                    print(
+                        f"{_DIM}[{stamp} ET] cycle {cycle}: refreshing historical "
+                        f"baseline for {len(tickers)} tickers via yfinance...{_RESET}"
+                    )
+                    try:
+                        history_cache = fetch_history(tickers)
+                        history_cache_day = today
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  {_YELLOW}history refresh failed: {e}{_RESET}")
+                        _sleep_interruptible(opts.interval_minutes * 60)
+                        continue
+
+                print(
+                    f"{_DIM}[{stamp} ET] cycle {cycle}: streaming live quotes "
+                    f"for {len(tickers)} tickers via Finnhub...{_RESET}"
+                )
+                try:
+                    bars = _build_live_bars(history_cache, finnhub, tickers)
+                except PermissionError as e:
+                    print(f"  {_YELLOW}{e}{_RESET}")
+                    print(f"  {_YELLOW}Falling back to yfinance for the rest of this run.{_RESET}")
+                    finnhub = None
+                    continue
+            else:
+                print(
+                    f"{_DIM}[{stamp} ET] cycle {cycle}: fetching {len(tickers)} tickers...{_RESET}"
+                )
+                try:
+                    bars = fetch_history(tickers)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  {_YELLOW}data fetch failed: {e}{_RESET}")
+                    _sleep_interruptible(opts.interval_minutes * 60)
+                    continue
 
             new_lines, scored_count = _run_strategy(bars, opts.strategy, seen_today)
             new_lines = new_lines[: opts.top]
@@ -287,3 +339,36 @@ def _sleep_interruptible(seconds: int) -> None:
     """Sleep in 1-second chunks so Ctrl-C feels responsive."""
     for _ in range(seconds):
         time.sleep(1)
+
+
+def _build_live_bars(
+    history_cache: dict[str, pd.DataFrame],
+    finnhub: FinnhubClient,
+    tickers: Iterable[str],
+) -> dict[str, pd.DataFrame]:
+    """Build per-ticker DataFrames where today's bar uses live Finnhub prices.
+
+    Volume on today's row stays whatever yfinance reported (15-min delayed),
+    because Finnhub's free `/quote` doesn't expose intraday volume. That's
+    accurate enough for the relative-volume *trend* check — the gap and
+    intraday-range checks become real-time, which is the part that matters
+    for catching a setup in time."""
+    out: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        df = history_cache.get(ticker)
+        if df is None or df.empty:
+            continue
+        quote = finnhub.quote(ticker)
+        if quote is None:
+            # Skip silently; the next cycle will retry.
+            continue
+
+        df = df.copy()
+        idx_today = df.index[-1]
+        df.at[idx_today, "Open"] = quote.open or float(df.at[idx_today, "Open"])
+        df.at[idx_today, "High"] = max(quote.high, quote.current)
+        df.at[idx_today, "Low"] = quote.low or float(df.at[idx_today, "Low"])
+        df.at[idx_today, "Close"] = quote.current
+        # Volume left as-is from yfinance (delayed but representative).
+        out[ticker] = df
+    return out
